@@ -593,43 +593,97 @@ exports.createSchemaCustomization = async (gatsbyApi: NodePluginArgs) => {
 
 // @ts-ignore
 // Add `localFile` nodes to assets.
-exports.createResolvers = async ({ createResolvers, intermediateSchema,  actions, cache, createNodeId, store, reporter }: CreateResolversArgs & {intermediateSchema: GraphQLSchema}) => {
-    const { createNode } = actions;
-    const ifaceName = `${loadedPluginOptions.typePrefix + craftGqlTypePrefix}AssetInterface`;
-    const iface = intermediateSchema.getType(ifaceName) as GraphQLInterfaceType;
-
-    if (iface) {
-        const possibleTypes = intermediateSchema.getPossibleTypes(iface);
-        const resolvers: {[key: string] : any}  = {};
-
-        for (const assetType of possibleTypes) {
-            resolvers[assetType.name] = {
-                localFile: {
-                    type: `File`,
-                    async resolve(source: any) {
-                        if (source.url) {
-                            return await createRemoteFileNode({
-                                url: encodeURI(source.url),
-                                store,
-                                cache,
-                                createNode,
-                                createNodeId,
-                                reporter
-                            });
-                        }
-                    },
-                },
-            }
-        }
-
-        createResolvers(resolvers);
-    }
-}
+// exports.createResolvers = async ({ createResolvers, intermediateSchema,  actions, cache, createNodeId, store, reporter }: CreateResolversArgs & {intermediateSchema: GraphQLSchema}) => {
+//     const { createNode } = actions;
+//     const ifaceName = `${loadedPluginOptions.typePrefix + craftGqlTypePrefix}AssetInterface`;
+//     const iface = intermediateSchema.getType(ifaceName) as GraphQLInterfaceType;
+//
+//     if (iface) {
+//         const possibleTypes = intermediateSchema.getPossibleTypes(iface);
+//         const resolvers: {[key: string] : any}  = {};
+//
+//         for (const assetType of possibleTypes) {
+//             resolvers[assetType.name] = {
+//                 localFile: {
+//                     type: `File`,
+//                     async resolve(source: any) {
+//                         if (source.url) {
+//                             return await createRemoteFileNode({
+//                                 url: encodeURI(source.url),
+//                                 store,
+//                                 cache,
+//                                 createNode,
+//                                 createNodeId,
+//                                 reporter
+//                             });
+//                         }
+//                     },
+//                 },
+//             }
+//         }
+//
+//         createResolvers(resolvers);
+//     }
+// }
 
 // Source the actual Gatsby nodes
 exports.sourceNodes = async (gatsbyApi: NodePluginArgs) => {
-    const {cache, reporter, webhookBody} = gatsbyApi
+    const {
+        cache,
+        reporter,
+        webhookBody,
+        actions,
+        createNodeId,
+        createContentDigest,
+        store
+    } = gatsbyApi
+    const { createNode } = actions;
     const config = await getSourcingConfig(gatsbyApi)
+
+
+    // otherwise, check for changed and deleted content.
+    const {data: remoteImages} = await execute({
+        operationName: 'GetAssetData',
+        query: `
+            query getAssets {  
+                assets(kind: "image") { url }
+            }
+        `,
+        variables: {},
+        additionalHeaders: {
+            "X-Craft-Gql-Cache": "no-cache"
+        }
+    });
+
+    for (const {url} of remoteImages.assets) {
+        const nodeId = createNodeId(`craft-asset-${url}`)
+
+        const image = await createRemoteFileNode({
+            url: url,
+            parentNodeId: nodeId,
+            store,
+            cache,
+            createNode,
+            createNodeId,
+            reporter
+        });
+
+        const node = {
+            id: nodeId,
+            parent: null,
+            children: [],
+            url,
+            localImageId: image.id,
+            internal: {
+                type: 'CustomImage',
+                content: url,
+                contentDigest: createContentDigest(url)
+            }
+        }
+
+        createNode(node)
+    }
+
 
     // If this is a webhook call
     if (webhookBody && typeof webhookBody == "object" && Object.keys(webhookBody).length) {

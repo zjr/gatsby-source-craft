@@ -291,7 +291,7 @@ async function execute(operation) {
     if (previewToken) {
         headers["X-Craft-Token"] = previewToken;
     }
-    const res = await p_retry_1.default(() => fetch(loadedPluginOptions.craftGqlUrl, Object.assign(Object.assign({}, loadedPluginOptions.fetchOptions), { method: "POST", body: JSON.stringify({ query, variables, operationName }), headers })), loadedPluginOptions.retryOptions);
+    const res = await (0, p_retry_1.default)(() => fetch(loadedPluginOptions.craftGqlUrl, Object.assign(Object.assign({}, loadedPluginOptions.fetchOptions), { method: "POST", body: JSON.stringify({ query, variables, operationName }), headers })), loadedPluginOptions.retryOptions);
     // Aaaand remove the token for subsequent requests
     previewToken = null;
     return await res.json();
@@ -354,7 +354,6 @@ async function initializePlugin(pluginOptions, gatsbyApi) {
     craftVersion = data.craftVersion;
     // Avoid deprecation errors
     if (craftVersion >= '3.7.0') {
-        console.log('Switch to canonical?');
         craftElementIdField = 'canonicalId';
     }
     reporter.info(`Craft v${craftVersion}, running Helper plugin v${gatsbyHelperVersion}`);
@@ -449,39 +448,81 @@ exports.createSchemaCustomization = async (gatsbyApi) => {
 };
 // @ts-ignore
 // Add `localFile` nodes to assets.
-exports.createResolvers = async ({ createResolvers, intermediateSchema, actions, cache, createNodeId, store, reporter }) => {
-    const { createNode } = actions;
-    const ifaceName = `${loadedPluginOptions.typePrefix + craftGqlTypePrefix}AssetInterface`;
-    const iface = intermediateSchema.getType(ifaceName);
-    if (iface) {
-        const possibleTypes = intermediateSchema.getPossibleTypes(iface);
-        const resolvers = {};
-        for (const assetType of possibleTypes) {
-            resolvers[assetType.name] = {
-                localFile: {
-                    type: `File`,
-                    async resolve(source) {
-                        if (source.url) {
-                            return await gatsby_source_filesystem_1.createRemoteFileNode({
-                                url: encodeURI(source.url),
-                                store,
-                                cache,
-                                createNode,
-                                createNodeId,
-                                reporter
-                            });
-                        }
-                    },
-                },
-            };
-        }
-        createResolvers(resolvers);
-    }
-};
+// exports.createResolvers = async ({ createResolvers, intermediateSchema,  actions, cache, createNodeId, store, reporter }: CreateResolversArgs & {intermediateSchema: GraphQLSchema}) => {
+//     const { createNode } = actions;
+//     const ifaceName = `${loadedPluginOptions.typePrefix + craftGqlTypePrefix}AssetInterface`;
+//     const iface = intermediateSchema.getType(ifaceName) as GraphQLInterfaceType;
+//
+//     if (iface) {
+//         const possibleTypes = intermediateSchema.getPossibleTypes(iface);
+//         const resolvers: {[key: string] : any}  = {};
+//
+//         for (const assetType of possibleTypes) {
+//             resolvers[assetType.name] = {
+//                 localFile: {
+//                     type: `File`,
+//                     async resolve(source: any) {
+//                         if (source.url) {
+//                             return await createRemoteFileNode({
+//                                 url: encodeURI(source.url),
+//                                 store,
+//                                 cache,
+//                                 createNode,
+//                                 createNodeId,
+//                                 reporter
+//                             });
+//                         }
+//                     },
+//                 },
+//             }
+//         }
+//
+//         createResolvers(resolvers);
+//     }
+// }
 // Source the actual Gatsby nodes
 exports.sourceNodes = async (gatsbyApi) => {
-    const { cache, reporter, webhookBody } = gatsbyApi;
+    const { cache, reporter, webhookBody, actions, createNodeId, createContentDigest, store } = gatsbyApi;
+    const { createNode } = actions;
     const config = await getSourcingConfig(gatsbyApi);
+    // otherwise, check for changed and deleted content.
+    const { data: remoteImages } = await execute({
+        operationName: 'GetAssetData',
+        query: `
+            query getAssets {  
+                assets(kind: "image") { url }
+            }
+        `,
+        variables: {},
+        additionalHeaders: {
+            "X-Craft-Gql-Cache": "no-cache"
+        }
+    });
+    for (const { url } of remoteImages.assets) {
+        const nodeId = createNodeId(`craft-asset-${url}`);
+        const image = await (0, gatsby_source_filesystem_1.createRemoteFileNode)({
+            url: url,
+            parentNodeId: nodeId,
+            store,
+            cache,
+            createNode,
+            createNodeId,
+            reporter
+        });
+        const node = {
+            id: nodeId,
+            parent: null,
+            children: [],
+            url,
+            localImageId: image.id,
+            internal: {
+                type: 'CustomImage',
+                content: url,
+                contentDigest: createContentDigest(url)
+            }
+        };
+        createNode(node);
+    }
     // If this is a webhook call
     if (webhookBody && typeof webhookBody == "object" && Object.keys(webhookBody).length) {
         reporter.info("Processing webhook.");
